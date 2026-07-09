@@ -1,0 +1,86 @@
+{
+  "_metadata": {
+    "major_version": 2,
+    "minor_version": 1
+  },
+  "display_information": {
+    "name": "GoSignal",
+    "description": "Evidence-backed launch readiness agent for Slack.",
+    "background_color": "#0F172A",
+    "long_description": "GoSignal turns public Slack launch and release threads into evidence-backed go or no-go decisions. It builds a durable markdown launch brief, highlights blockers and missing sign-offs, and gives teams one clear next action without relying on hidden AI judgment."
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "agent_view": {
+      "agent_description": "Analyze launch readiness in Slack, ground every decision in evidence, and drive one clear next action.",
+      "suggested_prompts": [
+        {
+          "title": "Analyze this launch",
+          "message": "Analyze launch readiness for the current thread."
+        },
+        {
+          "title": "What is blocking us?",
+          "message": "What is still blocking this launch?"
+        },
+        {
+          "title": "Request the missing sign-off",
+          "message": "Find the missing sign-off and suggest the next step."
+        }
+      ]
+    },
+    "bot_user": {
+      "display_name": "GoSignal",
+      "always_online": false
+    },
+    "shortcuts": [
+      {
+        "name": "Analyze launch readiness",
+        "callback_id": "analyze_launch_readiness",
+        "description": "Turn a launch thread into an evidence-backed readiness report",
+        "type": "message"
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "assistant:write",
+        "app_mentions:read",
+        "canvases:write",
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "chat:write.public",
+        "commands",
+        "files:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "search:read.files",
+        "search:read.public",
+        "search:read.users",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false,
+    "event_subscriptions": {
+      "bot_events": [
+        "app_context_changed",
+        "app_home_opened",
+        "app_mention",
+        "message.im"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true
+    }
+  }
+}
