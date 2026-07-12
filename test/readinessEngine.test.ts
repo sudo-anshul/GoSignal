@@ -10,11 +10,36 @@ const key: LaunchKey = {
 };
 
 function evaluate(messages: SlackMessageRecord[], searchEvidence: SearchEvidenceRecord[] = []) {
+  const profileEvidence: SlackMessageRecord[] = [
+    {
+      channelId: "C123",
+      threadTs: "1000.0001",
+      messageTs: "1000.0097",
+      text: "Rollback documented and confirmed for launch.",
+      createdAt: "2026-07-09T09:57:00Z"
+    },
+    {
+      channelId: "C123",
+      threadTs: "1000.0001",
+      messageTs: "1000.0098",
+      text: "Release notes ready and shared for launch.",
+      createdAt: "2026-07-09T09:58:00Z"
+    },
+    {
+      channelId: "C123",
+      threadTs: "1000.0001",
+      messageTs: "1000.0099",
+      text: "Primary on call owner is <@UONCALL> for this release.",
+      createdAt: "2026-07-09T09:59:00Z"
+    }
+  ];
+
   return evaluateLaunchReadiness({
     key,
     name: "Mobile v3 launch",
     createdByUserId: "U123",
-    threadMessages: messages,
+    launchProfile: "saas_release",
+    threadMessages: [...messages, ...profileEvidence],
     searchEvidence,
     now: new Date("2026-07-09T12:00:00Z")
   });
@@ -259,6 +284,136 @@ test("keeps the summary yellow when a dependency risk remains after approvals", 
   assert.match(launch.decision.summary, /is yellow with/i);
 });
 
+test("live search evidence can turn an otherwise green launch red", () => {
+  const launch = evaluate(
+    [
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0001",
+        text: "PM: Launch: Mobile v3 checkout rollout",
+        createdAt: "2026-07-09T09:00:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0002",
+        text: "Engineering lead approved for launch. <@UENG>",
+        createdAt: "2026-07-09T09:01:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0003",
+        text: "QA lead signed off. <@UQA>",
+        createdAt: "2026-07-09T09:02:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0004",
+        text: "Ops lead approved and rollback documented. <@UOPS>",
+        createdAt: "2026-07-09T09:03:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0005",
+        text: "Support readiness approved for launch. <@USUP>",
+        createdAt: "2026-07-09T09:04:00Z"
+      }
+    ],
+    [
+      {
+        id: "search-1",
+        sourceType: "search_message",
+        title: "Support escalation",
+        text: "Migration vendor is blocked and the launch is not ready until the dependency is unblocked.",
+        channelId: "C777",
+        channelName: "support-war-room",
+        createdAt: "2026-07-09T11:45:00Z"
+      }
+    ]
+  );
+
+  assert.equal(launch.decision.overallState, "red");
+  assert.equal(launch.blockers[0]?.title, "Blocking issue detected");
+  assert.equal(launch.evidence.find((item) => item.sourceType === "search_message")?.channelName, "support-war-room");
+});
+
+test("stale live search evidence lowers confidence for the affected category", () => {
+  const launch = evaluate(
+    [
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0001",
+        text: "PM: Launch: Mobile v3 checkout rollout",
+        createdAt: "2026-07-09T09:00:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0002",
+        text: "Engineering lead approved for launch. <@UENG>",
+        createdAt: "2026-07-09T09:01:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0003",
+        text: "QA lead signed off. <@UQA>",
+        createdAt: "2026-07-09T09:02:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0004",
+        text: "Ops lead approved and rollback documented. <@UOPS>",
+        createdAt: "2026-07-09T09:03:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0005",
+        text: "Support readiness approved for launch. <@USUP>",
+        createdAt: "2026-07-09T09:04:00Z"
+      }
+    ],
+    [
+      {
+        id: "search-2",
+        sourceType: "search_message",
+        title: "Vendor update",
+        text: "Vendor dependency is still pending for this rollout.",
+        channelId: "C555",
+        channelName: "launch-dependencies",
+        createdAt: "2026-07-01T08:00:00Z"
+      }
+    ]
+  );
+
+  assert.equal(launch.decision.overallState, "yellow");
+  assert.equal(launch.categories.find((category) => category.name === "Dependencies")?.confidence, "low");
+});
+
+test("ambiguous live search evidence forces needs_review instead of a false green", () => {
+  const launch = evaluate([], [
+    {
+      id: "search-3",
+      sourceType: "search_message",
+      title: "QA channel note",
+      text: "QA says this is probably okay, but I think we should double-check before launch.",
+      channelId: "C888",
+      channelName: "qa-release",
+      createdAt: "2026-07-09T11:50:00Z"
+    }
+  ]);
+
+  assert.equal(launch.decision.overallState, "needs_review");
+  assert.equal(launch.categories.find((category) => category.name === "Quality")?.state, "needs_review");
+});
+
 test("ignores prior GoSignal replies when re-analyzing a thread", () => {
   const launch = evaluate([
     {
@@ -315,4 +470,72 @@ test("ignores prior GoSignal replies when re-analyzing a thread", () => {
 
   assert.equal(launch.decision.overallState, "green");
   assert.equal(launch.blockers.length, 0);
+});
+
+test("mobile profile stays yellow until app store rollout evidence is present", () => {
+  const launch = evaluateLaunchReadiness({
+    key,
+    name: "Mobile v3 launch",
+    createdByUserId: "U123",
+    launchProfile: "mobile_release",
+    threadMessages: [
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0001",
+        text: "Engineering lead approved for launch. <@UENG>",
+        createdAt: "2026-07-09T09:00:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0002",
+        text: "QA lead signed off. <@UQA>",
+        createdAt: "2026-07-09T09:01:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0003",
+        text: "Ops lead approved and rollback documented. <@UOPS>",
+        createdAt: "2026-07-09T09:02:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0004",
+        text: "Support readiness approved for launch. <@USUP>",
+        createdAt: "2026-07-09T09:03:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0005",
+        text: "Marketing approved for launch. <@UMKT>",
+        createdAt: "2026-07-09T09:04:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0006",
+        text: "Release notes ready and shared for the mobile rollout.",
+        createdAt: "2026-07-09T09:05:00Z"
+      },
+      {
+        channelId: "C123",
+        threadTs: "1000.0001",
+        messageTs: "1000.0007",
+        text: "Primary on call owner is <@UONCALL> for launch day.",
+        createdAt: "2026-07-09T09:06:00Z"
+      }
+    ],
+    searchEvidence: [],
+    now: new Date("2026-07-09T12:00:00Z")
+  });
+
+  assert.equal(launch.decision.overallState, "yellow");
+  assert.equal(
+    launch.requirementChecks.find((requirement) => requirement.requirementId === "app_store_rollout")?.state,
+    "missing"
+  );
 });

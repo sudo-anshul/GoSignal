@@ -16,7 +16,9 @@ const ROLE_ALIASES: Record<string, string[]> = {
   "qa lead": ["qa lead", "qa", "quality lead", "quality", "test lead", "test"],
   "ops lead": ["ops lead", "ops", "operations lead", "operations", "sre lead", "sre"],
   "support readiness": ["support readiness", "support", "cx", "customer support"],
-  marketing: ["marketing lead", "marketing", "comms lead", "comms", "communications"]
+  marketing: ["marketing lead", "marketing", "comms lead", "comms", "communications"],
+  security: ["security lead", "security", "sec lead", "security review"],
+  "customer success": ["customer success", "cs lead", "success lead", "account team"]
 };
 
 function includesAny(text: string, phrases: string[]): boolean {

@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
   buildApprovalReplyExample,
+  DEFAULT_LAUNCH_PROFILE,
+  LAUNCH_PROFILE_DEFINITIONS,
   READINESS_CATEGORIES,
-  REQUIRED_APPROVAL_ROLES,
+  type LaunchProfileDefinition,
+  type ProfileEvidenceRequirementDefinition,
   STATE_PRIORITY,
   summarizeConfidence
 } from "./constants.ts";
@@ -15,9 +18,12 @@ import type {
   EvidenceFreshness,
   EvidenceItem,
   LaunchKey,
+  LaunchProfileId,
   LaunchRecord,
+  LaunchRequirementCheck,
   ReadinessCategory,
   ReadinessState,
+  RoleOwnerAssignment,
   SearchEvidenceRecord,
   SlackMessageRecord
 } from "./types.ts";
@@ -26,6 +32,7 @@ interface EvaluateLaunchInput {
   key: LaunchKey;
   name: string;
   createdByUserId: string;
+  launchProfile: LaunchProfileId;
   threadMessages: SlackMessageRecord[];
   searchEvidence: SearchEvidenceRecord[];
   existingLaunch?: LaunchRecord;
@@ -58,8 +65,12 @@ function summarizeText(text: string): string {
   return `${trimmed.slice(0, 137)}...`;
 }
 
+function normalizeForMatch(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
 function looksLikeGoSignalOutput(text: string): boolean {
-  const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+  const normalized = normalizeForMatch(text);
   return (
     normalized.startsWith("gosignal readiness:") ||
     normalized.startsWith("gosignal still needs") ||
@@ -142,6 +153,7 @@ function normalizeEvidence(
       summary: summarizeText(result.text),
       permalink: result.permalink,
       channelId: result.channelId,
+      channelName: result.channelName,
       messageTs: result.messageTs,
       createdAt: result.createdAt,
       categoryName,
@@ -155,8 +167,8 @@ function normalizeEvidence(
   return items.sort((left, right) => right.score - left.score);
 }
 
-function buildApprovals(evidence: EvidenceItem[]): ApprovalRequirement[] {
-  return REQUIRED_APPROVAL_ROLES.map((roleName) => {
+function buildApprovals(evidence: EvidenceItem[], requiredApprovalRoles: readonly string[]): ApprovalRequirement[] {
+  return requiredApprovalRoles.map((roleName) => {
     const positive = evidence.find((item) => item.signals.positiveApprovalRoles.includes(roleName));
     if (positive) {
       return {
@@ -188,7 +200,46 @@ function buildApprovals(evidence: EvidenceItem[]): ApprovalRequirement[] {
   });
 }
 
-function buildBlockers(evidence: EvidenceItem[]): Blocker[] {
+function buildRequirementChecks(
+  evidence: EvidenceItem[],
+  profile: LaunchProfileDefinition
+): LaunchRequirementCheck[] {
+  return profile.requiredEvidence.map((requirement) => {
+    const matchingEvidence = evidence.filter((item) => matchesRequirement(item, requirement));
+    if (matchingEvidence.length > 0) {
+      return {
+        requirementId: requirement.id,
+        label: requirement.label,
+        categoryName: requirement.categoryName,
+        state: "met",
+        reason: `${requirement.label} is explicitly present in Slack evidence.`,
+        evidenceIds: matchingEvidence.map((item) => item.id),
+        severity: requirement.severity
+      } satisfies LaunchRequirementCheck;
+    }
+
+    return {
+      requirementId: requirement.id,
+      label: requirement.label,
+      categoryName: requirement.categoryName,
+      state: "missing",
+      reason: `${requirement.label} is required for the ${profile.label.toLowerCase()} profile but no explicit evidence was found.`,
+      evidenceIds: [],
+      severity: requirement.severity
+    } satisfies LaunchRequirementCheck;
+  });
+}
+
+function matchesRequirement(item: EvidenceItem, requirement: ProfileEvidenceRequirementDefinition): boolean {
+  const text = normalizeForMatch(`${item.title} ${item.text}`);
+  if (requirement.id === "rollback_plan") {
+    return item.signals.rollbackReady || requirement.matchPhrases.some((phrase) => text.includes(phrase));
+  }
+
+  return requirement.matchPhrases.some((phrase) => text.includes(phrase));
+}
+
+function buildBlockers(evidence: EvidenceItem[], requirementChecks: LaunchRequirementCheck[]): Blocker[] {
   const blockers: Blocker[] = [];
   const seenTitles = new Set<string>();
 
@@ -224,6 +275,25 @@ function buildBlockers(evidence: EvidenceItem[]): Blocker[] {
     });
   }
 
+  for (const requirement of requirementChecks.filter((check) => check.state === "missing")) {
+    const title = `${requirement.label} missing`;
+    const key = `${requirement.categoryName}:${title}`;
+    if (seenTitles.has(key)) {
+      continue;
+    }
+    seenTitles.add(key);
+
+    blockers.push({
+      id: `blocker-${randomUUID()}`,
+      categoryName: requirement.categoryName,
+      title,
+      description: requirement.reason,
+      severity: requirement.severity,
+      status: "open",
+      evidenceIds: requirement.evidenceIds
+    });
+  }
+
   return blockers.sort(
     (left, right) => STATE_PRIORITY.indexOf(mapSeverityToState(left.severity)) - STATE_PRIORITY.indexOf(mapSeverityToState(right.severity))
   );
@@ -245,12 +315,16 @@ function determineCategoryState(
   categoryName: string,
   relevantEvidence: EvidenceItem[],
   blockers: Blocker[],
-  approvals: ApprovalRequirement[]
+  approvals: ApprovalRequirement[],
+  requirementChecks: LaunchRequirementCheck[]
 ): ReadinessCategory {
   const openBlockers = blockers.filter((blocker) => blocker.categoryName === categoryName && blocker.status === "open");
   const missingApprovals = categoryName === "Approvals"
     ? approvals.filter((approval) => approval.state !== "approved").map((approval) => approval.roleName)
     : [];
+  const missingRequirements = requirementChecks
+    .filter((requirement) => requirement.categoryName === categoryName && requirement.state !== "met")
+    .map((requirement) => requirement.label);
   const hasAmbiguity = relevantEvidence.some((item) => item.signals.ambiguous);
   const hasFreshEvidence = relevantEvidence.some((item) => item.freshness === "fresh");
 
@@ -259,6 +333,8 @@ function determineCategoryState(
     state = "red";
   } else if (missingApprovals.length > 0) {
     state = hasAmbiguity ? "needs_review" : "yellow";
+  } else if (missingRequirements.length > 0) {
+    state = "yellow";
   } else if (hasAmbiguity) {
     state = "needs_review";
   } else if (relevantEvidence.length === 0) {
@@ -273,7 +349,8 @@ function determineCategoryState(
     (hasFreshEvidence ? 40 : 20) +
     Math.min(relevantEvidence.length * 15, 45) -
     (hasAmbiguity ? 20 : 0) -
-    (missingApprovals.length > 0 ? 10 : 0);
+    (missingApprovals.length > 0 ? 10 : 0) -
+    (missingRequirements.length > 0 ? 10 : 0);
 
   const confidence = summarizeConfidence(confidenceScore);
 
@@ -285,7 +362,7 @@ function determineCategoryState(
     blockerCount: openBlockers.length,
     missingApprovalRoles: missingApprovals,
     evidenceIds: relevantEvidence.map((item) => item.id),
-    summary: summarizeCategory(categoryName, state, openBlockers, relevantEvidence, missingApprovals)
+    summary: summarizeCategory(categoryName, state, openBlockers, relevantEvidence, missingApprovals, missingRequirements)
   };
 }
 
@@ -294,13 +371,17 @@ function summarizeCategory(
   state: ReadinessState,
   blockers: Blocker[],
   evidence: EvidenceItem[],
-  missingApprovals: string[]
+  missingApprovals: string[],
+  missingRequirements: string[]
 ): string {
   if (blockers.length > 0) {
     return `${categoryName} is ${state} because ${blockers[0]?.title.toLowerCase()}.`;
   }
   if (missingApprovals.length > 0) {
     return `${categoryName} is ${state} because ${missingApprovals.join(", ")} is still missing.`;
+  }
+  if (missingRequirements.length > 0) {
+    return `${categoryName} is ${state} because ${missingRequirements.join(", ")} still needs explicit evidence.`;
   }
   if (evidence.length === 0) {
     return `${categoryName} needs review because no explicit evidence was found.`;
@@ -311,7 +392,12 @@ function summarizeCategory(
   return `${categoryName} is ${state} based on explicit Slack evidence.`;
 }
 
-function determineOverallState(allCategories: ReadinessCategory[], approvals: ApprovalRequirement[], blockers: Blocker[]): ReadinessState {
+function determineOverallState(
+  allCategories: ReadinessCategory[],
+  approvals: ApprovalRequirement[],
+  blockers: Blocker[],
+  requirementChecks: LaunchRequirementCheck[]
+): ReadinessState {
   const openHighBlocker = blockers.some((blocker) => blocker.status === "open" && (blocker.severity === "critical" || blocker.severity === "high"));
   if (openHighBlocker || allCategories.some((category) => category.state === "red")) {
     return "red";
@@ -319,7 +405,11 @@ function determineOverallState(allCategories: ReadinessCategory[], approvals: Ap
   if (allCategories.some((category) => category.state === "needs_review")) {
     return "needs_review";
   }
-  if (approvals.some((approval) => approval.state !== "approved") || allCategories.some((category) => category.state === "yellow")) {
+  if (
+    approvals.some((approval) => approval.state !== "approved") ||
+    requirementChecks.some((requirement) => requirement.state !== "met") ||
+    allCategories.some((category) => category.state === "yellow")
+  ) {
     return "yellow";
   }
   return "green";
@@ -328,10 +418,15 @@ function determineOverallState(allCategories: ReadinessCategory[], approvals: Ap
 function determineRecommendation(
   overallState: ReadinessState,
   blockers: Blocker[],
-  approvals: ApprovalRequirement[]
+  approvals: ApprovalRequirement[],
+  requirementChecks: LaunchRequirementCheck[],
+  ownerAssignments: RoleOwnerAssignment[]
 ): { recommendation: string; nextAction: string; rationale: string[] } {
   const topBlocker = blockers.find((blocker) => blocker.status === "open");
   const missingApproval = approvals.find((approval) => approval.state !== "approved");
+  const missingRequirement = requirementChecks.find((requirement) => requirement.state !== "met");
+  const missingApprovalOwner =
+    missingApproval ? ownerAssignments.find((assignment) => assignment.roleName === missingApproval.roleName) : undefined;
 
   if (overallState === "red" && topBlocker) {
     return {
@@ -359,10 +454,25 @@ function determineRecommendation(
     if (missingApproval) {
       return {
         recommendation: "Proceed with caution.",
-        nextAction: `Request ${missingApproval.roleName} before recommending green.`,
+        nextAction: missingApprovalOwner
+          ? `Remind <@${missingApprovalOwner.userId}> to secure ${missingApproval.roleName}.`
+          : `Request ${missingApproval.roleName} before recommending green.`,
         rationale: [
           `${missingApproval.roleName} is still missing.`,
-          "The launch appears close, but sign-off is incomplete."
+          missingApprovalOwner
+            ? `${missingApproval.roleName} is assigned to <@${missingApprovalOwner.userId}> for follow-up.`
+            : "The launch appears close, but sign-off is incomplete."
+        ]
+      };
+    }
+
+    if (missingRequirement) {
+      return {
+        recommendation: "Proceed with caution.",
+        nextAction: `Add explicit evidence for ${missingRequirement.label.toLowerCase()} and re-run readiness.`,
+        rationale: [
+          `${missingRequirement.label} is required for the selected launch profile.`,
+          "The launch is missing profile-specific evidence even though no hard blocker was detected."
         ]
       };
     }
@@ -383,7 +493,7 @@ function determineRecommendation(
     recommendation: "Ready to launch.",
     nextAction: "Keep monitoring the thread and re-run if the context changes.",
     rationale: [
-      "All required approvals were found in Slack evidence.",
+      "All required approvals and profile-specific evidence checks are satisfied.",
       "No open blockers remain in the monitored launch thread."
     ]
   };
@@ -394,10 +504,12 @@ function buildSummary(
   overallState: ReadinessState,
   confidence: ConfidenceLevel,
   blockers: Blocker[],
-  approvals: ApprovalRequirement[]
+  approvals: ApprovalRequirement[],
+  requirementChecks: LaunchRequirementCheck[]
 ): string {
   const topBlocker = blockers.find((blocker) => blocker.status === "open");
   const missingApproval = approvals.find((approval) => approval.state !== "approved");
+  const missingRequirement = requirementChecks.find((requirement) => requirement.state !== "met");
 
   if (overallState === "red" && topBlocker) {
     return `${name} is ${overallState} with ${confidence} confidence because ${topBlocker.title.toLowerCase()} is still unresolved.`;
@@ -409,12 +521,15 @@ function buildSummary(
     if (missingApproval) {
       return `${name} is yellow with ${confidence} confidence because ${missingApproval.roleName} is still missing.`;
     }
+    if (missingRequirement) {
+      return `${name} is yellow with ${confidence} confidence because ${missingRequirement.label.toLowerCase()} still needs explicit evidence.`;
+    }
     if (topBlocker) {
       return `${name} is yellow with ${confidence} confidence because ${topBlocker.title.toLowerCase()} still needs follow-up.`;
     }
     return `${name} is yellow with ${confidence} confidence because one or more readiness areas are still incomplete.`;
   }
-  return `${name} is green with ${confidence} confidence based on explicit approvals and no open blockers.`;
+  return `${name} is green with ${confidence} confidence based on explicit approvals and profile-ready evidence.`;
 }
 
 function findLaunchLabel(threadMessages: SlackMessageRecord[], fallback?: string): string {
@@ -431,6 +546,25 @@ function findLaunchLabel(threadMessages: SlackMessageRecord[], fallback?: string
   return fallback ?? threadMessages[0]?.text ?? "Untitled launch";
 }
 
+function normalizeProfileLabel(value: string): string {
+  return normalizeForMatch(value)
+    .replace(/launch profile:\s*/g, "")
+    .replace(/profile:\s*/g, "");
+}
+
+function resolveProfileFromText(value: string): LaunchProfileId | undefined {
+  const normalized = normalizeProfileLabel(value);
+  for (const [profileId, profile] of Object.entries(LAUNCH_PROFILE_DEFINITIONS) as Array<[LaunchProfileId, LaunchProfileDefinition]>) {
+    if (normalized === normalizeForMatch(profile.label) || normalized === profileId.replace(/_/g, " ")) {
+      return profileId;
+    }
+    if (profile.heuristicHints.some((hint) => normalized.includes(normalizeForMatch(hint)))) {
+      return profileId;
+    }
+  }
+  return undefined;
+}
+
 export function deriveLaunchName(threadMessages: SlackMessageRecord[], fallback?: string): string {
   const root = findLaunchLabel(threadMessages, fallback);
   const normalized = root.replace(/\s+/g, " ").trim();
@@ -440,29 +574,69 @@ export function deriveLaunchName(threadMessages: SlackMessageRecord[], fallback?
   return `${normalized.slice(0, 67)}...`;
 }
 
-export function buildSearchQuery(name: string): string {
-  return `Find public Slack evidence for ${name}. Look for blockers, rollback status, QA regressions, dependency risks, and explicit approvals.`;
+export function deriveLaunchProfile(
+  threadMessages: SlackMessageRecord[],
+  defaultProfile: LaunchProfileId = DEFAULT_LAUNCH_PROFILE,
+  fallback?: LaunchProfileId
+): LaunchProfileId {
+  for (const message of threadMessages) {
+    const lines = message.text.split("\n");
+    for (const line of lines) {
+      const explicitMatch = line.match(/^\s*(?:launch\s+)?profile:\s*(.+?)\s*$/i);
+      if (explicitMatch?.[1]) {
+        return resolveProfileFromText(explicitMatch[1]) ?? fallback ?? defaultProfile;
+      }
+    }
+  }
+
+  const combinedText = normalizeForMatch(threadMessages.map((message) => message.text).join("\n"));
+  for (const [profileId, profile] of Object.entries(LAUNCH_PROFILE_DEFINITIONS) as Array<[LaunchProfileId, LaunchProfileDefinition]>) {
+    if (profile.heuristicHints.some((hint) => combinedText.includes(normalizeForMatch(hint)))) {
+      return profileId;
+    }
+  }
+
+  return fallback ?? defaultProfile;
+}
+
+export function buildSearchQuery(name: string, launchProfile: LaunchProfileId = DEFAULT_LAUNCH_PROFILE): string {
+  const profile = LAUNCH_PROFILE_DEFINITIONS[launchProfile];
+  return (
+    `Find public Slack evidence for ${name}. ` +
+    `This is a ${profile.label.toLowerCase()} launch. ` +
+    `Look for blockers, profile-specific requirements, rollback status, dependency risks, and explicit approvals.`
+  );
 }
 
 export function evaluateLaunchReadiness(input: EvaluateLaunchInput): LaunchRecord {
   const now = input.now ?? new Date();
+  const profile = LAUNCH_PROFILE_DEFINITIONS[input.launchProfile];
   const evidence = normalizeEvidence(input.threadMessages, input.searchEvidence, now);
-  const approvals = buildApprovals(evidence);
-  const blockers = buildBlockers(evidence);
+  const approvals = buildApprovals(evidence, profile.requiredApprovalRoles);
+  const requirementChecks = buildRequirementChecks(evidence, profile);
+  const ownerAssignments = input.existingLaunch?.ownerAssignments ?? [];
+  const blockers = buildBlockers(evidence, requirementChecks);
   const categories = READINESS_CATEGORIES.map((categoryName) =>
     determineCategoryState(
       categoryName,
       evidence.filter((item) => item.categoryName === categoryName),
       blockers,
-      approvals
+      approvals,
+      requirementChecks
     )
   );
-  const overallState = determineOverallState(categories, approvals, blockers);
+  const overallState = determineOverallState(categories, approvals, blockers, requirementChecks);
   const confidenceScore =
     categories.reduce((total, category) => total + (category.confidence === "high" ? 30 : category.confidence === "medium" ? 20 : 10), 0) /
     Math.max(categories.length, 1);
   const confidence = summarizeConfidence(confidenceScore);
-  const { recommendation, nextAction, rationale } = determineRecommendation(overallState, blockers, approvals);
+  const { recommendation, nextAction, rationale } = determineRecommendation(
+    overallState,
+    blockers,
+    approvals,
+    requirementChecks,
+    ownerAssignments
+  );
 
   const decision: DecisionSnapshot = {
     id: `decision-${randomUUID()}`,
@@ -470,9 +644,9 @@ export function evaluateLaunchReadiness(input: EvaluateLaunchInput): LaunchRecor
     overallState,
     confidence,
     recommendation,
-    summary: buildSummary(input.name, overallState, confidence, blockers, approvals),
+    summary: buildSummary(input.name, overallState, confidence, blockers, approvals, requirementChecks),
     nextAction,
-    rationale,
+    rationale: [`Profile: ${profile.label}.`, ...rationale],
     blockerIds: blockers.filter((blocker) => blocker.status === "open").map((blocker) => blocker.id)
   };
 
@@ -484,10 +658,13 @@ export function evaluateLaunchReadiness(input: EvaluateLaunchInput): LaunchRecor
     name: input.name,
     createdByUserId: input.createdByUserId,
     status: overallState === "green" ? "ready" : overallState === "red" ? "hold" : "active",
+    launchProfile: input.launchProfile,
     canvasId: input.existingLaunch?.canvasId,
     canvasLinkLabel: input.existingLaunch?.canvasLinkLabel,
     categories,
     approvals,
+    requirementChecks,
+    ownerAssignments,
     blockers,
     evidence,
     decision,

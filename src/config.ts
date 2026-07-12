@@ -10,6 +10,7 @@ export interface AppConfig {
   slackSigningSecret: string;
   slackBotToken: string;
   slackAppToken: string | undefined;
+  slackTokenVerificationEnabled: boolean;
   databaseUrl: string | undefined;
   useSocketMode: boolean;
   enableLlmSummaries: boolean;
@@ -156,6 +157,7 @@ export function loadConfig(): AppConfig {
     slackSigningSecret: requireEnv("SLACK_SIGNING_SECRET"),
     slackBotToken: requireEnv("SLACK_BOT_TOKEN"),
     slackAppToken: process.env.SLACK_APP_TOKEN,
+    slackTokenVerificationEnabled: parseBoolean(process.env.SLACK_TOKEN_VERIFICATION_ENABLED, true),
     databaseUrl: process.env.DATABASE_URL,
     useSocketMode: parseBoolean(process.env.USE_SOCKET_MODE, false),
     enableLlmSummaries: parseBoolean(process.env.ENABLE_LLM_SUMMARIES, false),
