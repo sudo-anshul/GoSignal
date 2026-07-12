@@ -2,6 +2,7 @@ services:
   - type: web
     name: gosignal
     runtime: node
+    plan: free
     healthCheckPath: /healthz
     buildCommand: npm ci && npm run verify
     startCommand: npm start
