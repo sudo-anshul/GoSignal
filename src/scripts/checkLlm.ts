@@ -75,6 +75,7 @@ function buildSampleLaunch(): LaunchRecord {
     name: "Mobile v3 checkout rollout",
     createdByUserId: "U-check",
     status: "active",
+    launchProfile: "saas_release",
     categories: [
       buildCategory("Engineering", "green", "high", "Engineering lead confirmed rollout readiness."),
       buildCategory("Quality", "green", "high", "QA signed off after final regression pass."),
@@ -105,6 +106,36 @@ function buildSampleLaunch(): LaunchRecord {
         reason: "Support readiness approval has not been explicitly posted yet."
       }
     ],
+    requirementChecks: [
+      {
+        requirementId: "rollback_plan",
+        label: "Rollback plan",
+        categoryName: "Operations",
+        state: "met",
+        reason: "Rollback documented in-thread.",
+        evidenceIds: ["ev-eng-1"],
+        severity: "high"
+      },
+      {
+        requirementId: "release_notes",
+        label: "Release notes",
+        categoryName: "Comms",
+        state: "met",
+        reason: "Release notes are ready for the launch.",
+        evidenceIds: ["ev-qa-1"],
+        severity: "medium"
+      },
+      {
+        requirementId: "owner_on_call",
+        label: "On-call owner",
+        categoryName: "Operations",
+        state: "met",
+        reason: "Primary on-call owner was assigned.",
+        evidenceIds: ["ev-support-1"],
+        severity: "medium"
+      }
+    ],
+    ownerAssignments: [],
     blockers: [],
     evidence: [
       buildEvidence("ev-eng-1", "Engineering", "Engineering lead approved the rollout for launch.", 92),

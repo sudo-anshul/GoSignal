@@ -11,6 +11,7 @@ const sampleLaunch = evaluateLaunchReadiness({
   },
   name: "Mobile v3 launch",
   createdByUserId: "U123",
+  launchProfile: "saas_release",
   threadMessages: [
     {
       channelId: "C123",
@@ -32,6 +33,20 @@ const sampleLaunch = evaluateLaunchReadiness({
       messageTs: "1000.0003",
       text: "Ops lead approved and rollback documented. <@UOPS>",
       createdAt: "2026-07-09T09:02:00Z"
+    },
+    {
+      channelId: "C123",
+      threadTs: "1000.0001",
+      messageTs: "1000.0004",
+      text: "Release notes ready and shared for launch.",
+      createdAt: "2026-07-09T09:03:00Z"
+    },
+    {
+      channelId: "C123",
+      threadTs: "1000.0001",
+      messageTs: "1000.0005",
+      text: "Primary on call owner is <@UONCALL> for the rollout.",
+      createdAt: "2026-07-09T09:04:00Z"
     }
   ],
   searchEvidence: [],

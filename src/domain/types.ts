@@ -4,6 +4,28 @@ export type EvidenceFreshness = "fresh" | "stale" | "unknown";
 export type EvidenceSourceType = "thread_message" | "search_message" | "search_file" | "search_channel";
 export type ApprovalState = "approved" | "missing" | "blocked" | "needs_review";
 export type Severity = "low" | "medium" | "high" | "critical";
+export type SearchEvidenceStatus = "used" | "empty" | "unavailable";
+export type WorkspaceSearchMode = "public_only" | "thread_only";
+export type LaunchStatus = "draft" | "active" | "hold" | "ready";
+export type LaunchProfileId =
+  | "saas_release"
+  | "mobile_release"
+  | "infrastructure_migration"
+  | "customer_migration"
+  | "security_patch"
+  | "marketing_launch";
+export type RequirementState = "met" | "missing" | "needs_review";
+export type AuditEventType =
+  | "launch_analyzed"
+  | "launch_rerun"
+  | "signoff_requested"
+  | "launch_opened"
+  | "canvas_opened"
+  | "workspace_settings_updated"
+  | "owner_assigned"
+  | "owner_reminded"
+  | "launch_exported"
+  | "launch_history_viewed";
 
 export interface LaunchKey {
   workspaceId: string;
@@ -29,9 +51,45 @@ export interface SearchEvidenceRecord {
   text: string;
   permalink?: string;
   channelId?: string;
+  channelName?: string;
   messageTs?: string;
   createdAt?: string;
   rawScore?: number;
+}
+
+export interface SearchDiagnostics {
+  status: SearchEvidenceStatus;
+  note: string;
+  resultCount: number;
+  messageCount: number;
+  fileCount: number;
+  channelCount: number;
+}
+
+export interface SearchContextResult {
+  evidence: SearchEvidenceRecord[];
+  diagnostics: SearchDiagnostics;
+}
+
+export interface WorkspaceSettingsRecord {
+  workspaceId: string;
+  searchMode: WorkspaceSearchMode;
+  auditRetentionDays: number;
+  defaultLaunchProfile: LaunchProfileId;
+  updatedByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuditEventRecord {
+  id: string;
+  workspaceId: string;
+  actorUserId: string;
+  eventType: AuditEventType;
+  summary: string;
+  launchId?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
 }
 
 export interface EvidenceSignalSet {
@@ -56,6 +114,7 @@ export interface EvidenceItem {
   summary: string;
   permalink?: string;
   channelId?: string;
+  channelName?: string;
   messageTs?: string;
   createdAt?: string;
   categoryName: string;
@@ -63,6 +122,25 @@ export interface EvidenceItem {
   score: number;
   severity: Severity;
   signals: EvidenceSignalSet;
+}
+
+export interface LaunchRequirementCheck {
+  requirementId: string;
+  label: string;
+  categoryName: string;
+  state: RequirementState;
+  reason: string;
+  evidenceIds: string[];
+  severity: Severity;
+}
+
+export interface RoleOwnerAssignment {
+  roleName: string;
+  userId: string;
+  assignedByUserId: string;
+  assignedAt: string;
+  lastRemindedAt?: string;
+  reminderCount: number;
 }
 
 export interface ApprovalRequirement {
@@ -111,15 +189,19 @@ export interface LaunchRecord extends LaunchKey {
   id: string;
   name: string;
   createdByUserId: string;
-  status: "draft" | "active" | "hold" | "ready";
+  status: LaunchStatus;
+  launchProfile: LaunchProfileId;
   canvasId?: string;
   canvasLinkLabel?: string;
   categories: ReadinessCategory[];
   approvals: ApprovalRequirement[];
+  requirementChecks: LaunchRequirementCheck[];
+  ownerAssignments: RoleOwnerAssignment[];
   blockers: Blocker[];
   evidence: EvidenceItem[];
   decision: DecisionSnapshot;
   searchQuery?: string;
+  searchDiagnostics?: SearchDiagnostics;
   createdAt: string;
   updatedAt: string;
 }

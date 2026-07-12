@@ -1,0 +1,74 @@
+name: Verify and Deploy GoSignal to Render
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gosignal-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify source, tests, and production entrypoint
+        run: npm run verify
+
+      - name: Smoke test the built production artifact
+        run: npm run smoke
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Check whether the Render deploy hook is configured
+        id: render-hook
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger Render deploy hook for the exact commit
+        if: steps.render-hook.outputs.configured == 'true'
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          test -n "$RENDER_DEPLOY_HOOK_URL" || (echo "Missing GitHub repository secret RENDER_DEPLOY_HOOK_URL" && exit 1)
+          curl --fail --silent --show-error --request POST "${RENDER_DEPLOY_HOOK_URL}?ref=${COMMIT_SHA}"
+
+      - name: Explain why Render deploy was skipped
+        if: steps.render-hook.outputs.configured != 'true'
+        run: |
+          echo "Render deploy skipped because the GitHub repository secret RENDER_DEPLOY_HOOK_URL is not set yet."
+          echo "Set the secret, then rerun this workflow or push a new commit to main."

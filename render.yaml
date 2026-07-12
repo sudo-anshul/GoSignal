@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: gosignal
+    runtime: node
+    healthCheckPath: /healthz
+    buildCommand: npm ci && npm run verify
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: USE_SOCKET_MODE
+        value: "true"
+      - key: SLACK_TOKEN_VERIFICATION_ENABLED
+        value: "true"
+      - key: ENABLE_LLM_SUMMARIES
+        value: "false"
+      - key: LLM_PROVIDER
+        value: deterministic
+      - key: DATABASE_URL
+        sync: false
+      - key: SLACK_SIGNING_SECRET
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_APP_TOKEN
+        sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false

@@ -1,12 +1,18 @@
 import type { WebClient } from "@slack/web-api";
-import type { SearchEvidenceRecord, SearchRequest, SlackMessageRecord } from "../domain/types.ts";
+import type {
+  SearchContextResult,
+  SearchDiagnostics,
+  SearchEvidenceRecord,
+  SearchRequest,
+  SlackMessageRecord
+} from "../domain/types.ts";
 
 export interface ThreadSource {
   fetchThread(client: WebClient, channelId: string, threadTs: string): Promise<SlackMessageRecord[]>;
 }
 
 export interface SearchSource {
-  searchPublicContext(client: WebClient, request: SearchRequest): Promise<SearchEvidenceRecord[]>;
+  searchPublicContext(client: WebClient, request: SearchRequest): Promise<SearchContextResult>;
 }
 
 export interface CanvasGateway {
@@ -69,9 +75,16 @@ function flattenSearchCollections(payload: Record<string, unknown>): unknown[] {
 }
 
 export class SlackSearchSource implements SearchSource {
-  async searchPublicContext(client: WebClient, request: SearchRequest): Promise<SearchEvidenceRecord[]> {
+  async searchPublicContext(client: WebClient, request: SearchRequest): Promise<SearchContextResult> {
     if (!request.actionToken) {
-      return [];
+      return {
+        evidence: [],
+        diagnostics: buildDiagnostics(
+          "unavailable",
+          "Live search unavailable for this run because Slack did not provide an action token. Use the thread shortcut or mention GoSignal in-thread to add cross-channel evidence.",
+          []
+        )
+      };
     }
 
     try {
@@ -80,12 +93,34 @@ export class SlackSearchSource implements SearchSource {
         action_token: request.actionToken
       })) as unknown as Record<string, unknown>;
       const collections = flattenSearchCollections(response);
-
-      return collections
+      const evidence = collections
         .map((item, index) => normalizeSearchItem(item, index))
         .filter((item): item is SearchEvidenceRecord => item !== undefined);
+
+      return {
+        evidence,
+        diagnostics:
+          evidence.length > 0
+            ? buildDiagnostics(
+                "used",
+                `Live search added ${evidence.length} public evidence item${evidence.length === 1 ? "" : "s"} from outside the current thread.`,
+                evidence
+              )
+            : buildDiagnostics(
+                "empty",
+                "Live search ran for this thread but did not find additional public Slack evidence for the current launch.",
+                evidence
+              )
+      };
     } catch {
-      return [];
+      return {
+        evidence: [],
+        diagnostics: buildDiagnostics(
+          "unavailable",
+          "Live search was unavailable for this run, so GoSignal fell back to thread evidence only.",
+          []
+        )
+      };
     }
   }
 }
@@ -100,8 +135,21 @@ function normalizeSearchItem(item: unknown, index: number): SearchEvidenceRecord
   const permalink = typeof record.permalink === "string" ? record.permalink : undefined;
   const channel = record.channel as Record<string, unknown> | undefined;
   const channelId = typeof channel?.id === "string" ? channel.id : undefined;
-  const title = typeof record.title === "string" ? record.title : `Search evidence ${index + 1}`;
+  const channelName =
+    typeof channel?.name === "string"
+      ? channel.name
+      : typeof record.channel_name === "string"
+        ? record.channel_name
+        : undefined;
   const sourceType = typeof record.filetype === "string" ? "search_file" : channelId ? "search_message" : "search_channel";
+  const title =
+    typeof record.title === "string"
+      ? record.title
+      : sourceType === "search_message"
+        ? `Live search message ${index + 1}`
+        : sourceType === "search_file"
+          ? `Live search file ${index + 1}`
+          : `Live search channel ${index + 1}`;
 
   return {
     id: typeof record.id === "string" ? record.id : `search-${index}`,
@@ -110,9 +158,48 @@ function normalizeSearchItem(item: unknown, index: number): SearchEvidenceRecord
     text,
     permalink,
     channelId,
-    messageTs: typeof record.ts === "string" ? record.ts : undefined,
-    createdAt: typeof record.created_at === "string" ? record.created_at : undefined,
+    channelName,
+    messageTs: normalizeSearchTimestamp(record.ts),
+    createdAt: normalizeSearchTimestamp(record.created_at),
     rawScore: typeof record.score === "number" ? record.score : undefined
+  };
+}
+
+function normalizeSearchTimestamp(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value * (value > 10_000_000_000 ? 1 : 1_000)).toISOString();
+  }
+
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const numericValue = Number(trimmed);
+  if (!Number.isNaN(numericValue)) {
+    return new Date(numericValue * (trimmed.includes(".") || numericValue < 10_000_000_000 ? 1_000 : 1)).toISOString();
+  }
+
+  const parsed = Date.parse(trimmed);
+  return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
+}
+
+function buildDiagnostics(status: SearchDiagnostics["status"], note: string, evidence: SearchEvidenceRecord[]): SearchDiagnostics {
+  const messageCount = evidence.filter((item) => item.sourceType === "search_message").length;
+  const fileCount = evidence.filter((item) => item.sourceType === "search_file").length;
+  const channelCount = evidence.filter((item) => item.sourceType === "search_channel").length;
+
+  return {
+    status,
+    note,
+    resultCount: evidence.length,
+    messageCount,
+    fileCount,
+    channelCount
   };
 }
 
