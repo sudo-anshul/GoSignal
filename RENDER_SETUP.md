@@ -6,7 +6,6 @@ This is the recommended non-Azure hosting path for GoSignal.
 
 - Render Web Service for the Slack app
 - Render Postgres or another PostgreSQL provider for persistence
-- GitHub Actions for CI
 - A Render deploy hook for automatic production deploys after CI passes
 
 ## Files Already Added To This Repo
